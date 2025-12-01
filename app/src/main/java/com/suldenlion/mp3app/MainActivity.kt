@@ -45,6 +45,10 @@ import com.suldenlion.mp3app.ui.theme.MP3AppTheme
 import com.suldenlion.mp3app.viewmodel.MusicViewModel
 import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 class MainActivity : ComponentActivity() {
 
@@ -83,7 +87,13 @@ fun Mp3AppNavigator(mediaController: MediaController?) {
     val navController = rememberNavController()
     val musicViewModel: MusicViewModel = viewModel()
 
-    NavHost(navController = navController, startDestination = "musicList") {
+    val startDestination = if (mediaController?.currentMediaItem != null) {
+        "nowPlaying"
+    } else {
+        "musicList"
+    }
+
+    NavHost(navController = navController, startDestination = startDestination) {
         composable("musicList") {
             PermissionScreen(
                 mediaController = mediaController,
@@ -178,9 +188,12 @@ fun MusicListScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
-                items(musicList) { musicItem ->
+                items(musicList.size) { index ->
+                    val musicItem = musicList[index]
                     MusicListItem(
                         musicItem = musicItem,
+                        musicList = musicList,
+                        index = index,
                         mediaController = mediaController,
                         navController = navController
                     )
@@ -193,6 +206,8 @@ fun MusicListScreen(
 @Composable
 fun MusicListItem(
     musicItem: MusicItem,
+    musicList: List<MusicItem>,
+    index: Int,
     mediaController: MediaController?,
     navController: NavController
 ) {
@@ -202,18 +217,19 @@ fun MusicListItem(
             .padding(vertical = 4.dp)
             .clickable {
                 mediaController?.let {
-                    val metadata = MediaMetadata.Builder()
-                        .setTitle(musicItem.title)
-                        .setArtist(musicItem.artist)
-                        .build()
-                    
-                    val mediaItem = MediaItem.Builder()
-                        .setMediaId(musicItem.id.toString())
-                        .setUri(musicItem.contentUri)
-                        .setMediaMetadata(metadata)
-                        .build()
-                        
-                    it.setMediaItem(mediaItem)
+                    val mediaItems = musicList.map { item ->
+                        MediaItem.Builder()
+                            .setMediaId(item.id.toString())
+                            .setUri(item.contentUri)
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle(item.title)
+                                    .setArtist(item.artist)
+                                    .build()
+                            )
+                            .build()
+                    }
+                    it.setMediaItems(mediaItems, index, 0L)
                     it.prepare()
                     it.play()
                 }
@@ -248,6 +264,7 @@ fun MusicListItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingScreen(
     mediaController: MediaController?,
@@ -255,7 +272,7 @@ fun NowPlayingScreen(
     musicViewModel: MusicViewModel
 ) {
     var currentPosition by remember { mutableStateOf(0L) }
-    var duration by remember { mutableStateOf(0L) }
+    var duration by remember { mutableStateOf(mediaController?.duration?.coerceAtLeast(0L) ?: 0L) }
     var isPlaying by remember { mutableStateOf(false) }
     var currentMediaItem by remember { mutableStateOf<MediaItem?>(null) }
     val currentLyrics by musicViewModel.currentLyrics.collectAsState()
@@ -268,7 +285,7 @@ fun NowPlayingScreen(
 
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 currentMediaItem = mediaController?.currentMediaItem
-                duration = mediaController?.duration ?: 0L
+                duration = mediaController?.duration?.coerceAtLeast(0L) ?: 0L
                 currentMediaItem?.mediaId?.toLongOrNull()?.let {
                     musicViewModel.loadLyrics(it)
                 }
@@ -277,7 +294,7 @@ fun NowPlayingScreen(
         mediaController?.addListener(listener)
         isPlaying = mediaController?.isPlaying ?: false
         currentMediaItem = mediaController?.currentMediaItem
-        duration = mediaController?.duration ?: 0L
+        // 초기 duration 설정 로직을 onMediaMetadataChanged 로 이동
         currentMediaItem?.mediaId?.toLongOrNull()?.let {
             musicViewModel.loadLyrics(it)
         }
@@ -321,25 +338,48 @@ fun NowPlayingScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Song Info
-        Text(text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "곡 정보 없음", style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "곡 정보 없음",
+            style = MaterialTheme.typography.headlineSmall,
+            maxLines = 1,
+            modifier = Modifier.basicMarquee()
+        )
         Spacer(modifier = Modifier.height(8.dp))
-        Text(text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "아티스트 정보 없음", style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "아티스트 정보 없음",
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
 
         // Lyrics
-        Card(modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
-            .padding(vertical = 16.dp)) {
-            Box(modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp), contentAlignment = Alignment.Center) {
+        Card(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(vertical = 16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+                    .verticalScroll(rememberScrollState()),
+                contentAlignment = Alignment.Center
+            ) {
                 Text(text = currentLyrics?.lyrics ?: "등록된 가사가 없습니다.")
             }
         }
 
         // Seek Bar
-        Slider(value = currentPosition.toFloat(), onValueChange = { currentPosition = it.toLong() }, valueRange = 0f..duration.toFloat().coerceAtLeast(0f), onValueChangeFinished = { mediaController?.seekTo(currentPosition) })
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Slider(
+            value = currentPosition.toFloat(),
+            onValueChange = { currentPosition = it.toLong() },
+            valueRange = 0f..duration.toFloat().coerceAtLeast(0f),
+            onValueChangeFinished = { mediaController?.seekTo(currentPosition) })
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
             Text(text = formatDuration(currentPosition))
             Text(text = formatDuration(duration))
         }
@@ -347,10 +387,32 @@ fun NowPlayingScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Controls
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { mediaController?.seekToPreviousMediaItem() }) { Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(48.dp)) }
-            IconButton(onClick = { if (isPlaying) mediaController?.pause() else mediaController?.play() }) { Icon(imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", modifier = Modifier.size(64.dp)) }
-            IconButton(onClick = { mediaController?.seekToNextMediaItem() }) { Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(48.dp)) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { mediaController?.seekToPreviousMediaItem() }) {
+                Icon(
+                    Icons.Default.SkipPrevious,
+                    contentDescription = "Previous",
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+            IconButton(onClick = { if (isPlaying) mediaController?.pause() else mediaController?.play() }) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause",
+                    modifier = Modifier.size(64.dp)
+                )
+            }
+            IconButton(onClick = { mediaController?.seekToNextMediaItem() }) {
+                Icon(
+                    Icons.Default.SkipNext,
+                    contentDescription = "Next",
+                    modifier = Modifier.size(48.dp)
+                )
+            }
         }
     }
 }

@@ -25,6 +25,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val currentLyrics: StateFlow<Lyric?> = _currentLyrics.asStateFlow()
 
     fun loadMusic() {
+        if (_musicList.value.isNotEmpty()) {
+            return
+        }
+
         viewModelScope.launch {
             _isLoading.value = true
             // 음악 목록을 가져오기 전에 미디어 스캔을 먼저 수행

@@ -1,0 +1,147 @@
+# MP3 플레이어 앱 리팩토링 기술 노트
+
+이 문서는 2025년 11월에 진행된 MP3 플레이어 앱 리팩토링 과정에서 적용된 주요 기술과 해결 방법에 대해 설명합니다.
+
+## 1. 성능 개선: ViewModel을 이용한 데이터 캐싱
+
+**문제:** 음악 목록 화면에 진입할 때마다 `MediaStore`를 새로 스캔하여 로딩이 매우 느렸습니다.
+
+**해결책:** `MusicViewModel` 내에 음악 목록을 캐시하는 로직을 추가했습니다.
+
+```kotlin
+// MusicViewModel.kt
+
+private val _musicList = MutableStateFlow<List<MusicItem>>(emptyList())
+val musicList: StateFlow<List<MusicItem>> = _musicList.asStateFlow()
+
+fun loadMusic() {
+    // _musicList가 비어있을 때만 데이터를 로드합니다.
+    if (_musicList.value.isNotEmpty()) {
+        return
+    }
+
+    viewModelScope.launch {
+        // ... (저장소에서 음악을 로드하는 로직)
+        _musicList.value = audioFiles
+    }
+}
+```
+
+**핵심:** `ViewModel`은 UI 상태를 저장하고 관리하는 생명주기를 따릅니다. 데이터를 `ViewModel`에 한 번 로드하고 `StateFlow`와 같은 상태 홀더에 저장하면, 화면 회전이나 화면 간 이동 시에도 데이터가 유지되어 불필요한 I/O 작업을 방지하고 앱의 반응성을 크게 향상시킬 수 있습니다.
+
+## 2. 재생 제어: Media3 재생 목록(Playlist) 관리
+
+**문제:** '다음 곡/이전 곡' 버튼이 작동하지 않고, 한 곡 재생이 끝나도 멈췄습니다.
+
+**해결책:** 단일 미디어 아이템 대신 전체 재생 목록을 `MediaController`에 설정했습니다.
+
+```kotlin
+// MainActivity.kt (MusicListItem 클릭 시)
+
+mediaController?.let {
+    // 1. 전체 음악 목록(musicList)을 MediaItem 리스트로 변환
+    val mediaItems = musicList.map { item ->
+        MediaItem.Builder()
+            .setMediaId(item.id.toString())
+            .setUri(item.contentUri)
+            // ... 메타데이터 설정
+            .build()
+    }
+    // 2. setMediaItems()를 사용해 전체 목록과 시작 인덱스를 전달
+    it.setMediaItems(mediaItems, index, 0L)
+    it.prepare()
+    it.play()
+}
+
+// PlaybackService.kt (onCreate 시)
+player = ExoPlayer.Builder(this).build()
+// 3. REPEAT_MODE_ALL 설정으로 자동 다음 곡 재생 활성화
+player.repeatMode = Player.REPEAT_MODE_ALL
+```
+
+**핵심:** `MediaController`에 `setMediaItem()` 대신 `setMediaItems()`를 사용하면 플레이어가 전체 재생 목록을 인지하게 됩니다. 이를 통해 `seekToNext/Previous` 호출이 가능해지며, `player.repeatMode = Player.REPEAT_MODE_ALL` 설정을 통해 목록의 끝에 도달했을 때 자동으로 다음 곡(또는 첫 곡)을 재생할 수 있습니다.
+
+## 3. UI 개선: Jetpack Compose Marquee 및 스크롤
+
+**문제:** 긴 제목과 가사가 화면에 잘려서 보였습니다.
+
+**해결책:** `basicMarquee`와 `verticalScroll` Modifier를 사용했습니다.
+
+```kotlin
+// MainActivity.kt (NowPlayingScreen)
+
+// 1. 긴 제목에 Marquee 효과 적용
+Text(
+    text = "매우 긴 노래 제목이 여기에 표시됩니다...",
+    maxLines = 1,
+    modifier = Modifier.basicMarquee()
+)
+
+// 2. 긴 가사를 담는 Box에 수직 스크롤 적용
+Box(
+    modifier = Modifier
+        .fillMaxSize()
+        .verticalScroll(rememberScrollState())
+) {
+    Text(text = "매우 긴 가사 내용...")
+}
+```
+
+**핵심:** Jetpack Compose에서는 실험용 API인 `@OptIn(ExperimentalFoundationApi::class)`와 `basicMarquee` Modifier를 통해 간단하게 텍스트 스크롤 효과를 구현할 수 있습니다. 또한 `verticalScroll`과 `rememberScrollState`를 사용하면 어떤 Composable이든 쉽게 스크롤 가능하도록 만들 수 있습니다.
+
+## 4. 버그 수정: 비동기 데이터 로딩 타이밍
+
+**문제:** 재생 화면 진입 시, 곡의 총 재생 시간이 `-153722867280912:-55`와 같이 깨져서 보였습니다.
+
+**해결책:** `Player.Listener`의 `onMediaMetadataChanged` 콜백 내에서만 `duration` 값을 업데이트하도록 수정했습니다.
+
+```kotlin
+// MainActivity.kt (NowPlayingScreen)
+
+var duration by remember { mutableStateOf(0L) }
+
+DisposableEffect(mediaController) {
+    val listener = object : Player.Listener {
+        // ...
+        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+            // 미디어 정보가 준비되었을 때만 duration을 갱신합니다.
+            duration = mediaController?.duration?.coerceAtLeast(0L) ?: 0L
+        }
+    }
+    // ...
+}
+```
+
+**핵심:** `mediaController.prepare()`는 비동기적으로 작동합니다. 따라서 `prepare()`를 호출한 직후에 `duration` 같은 메타데이터에 접근하면 아직 준비되지 않은 상태일 수 있습니다. `Player.Listener`의 콜백 메서드들은 플레이어의 상태가 특정 조건(예: 메타데이터 로드 완료)을 만족했을 때 호출되므로, 항상 정확하고 안전하게 상태를 업데이트할 수 있습니다.
+
+## 5. UX 개선: 알림에서 앱으로 복귀
+
+**문제:** 앱이 꺼진 상태에서 상단 바의 미디어 알림을 클릭해도 재생 화면으로 바로 가지 않았습니다.
+
+**해결책:** `MediaSession`에 `MainActivity`를 열 `PendingIntent`를 설정하고, `NavHost`의 시작 화면을 동적으로 결정했습니다.
+
+```kotlin
+// PlaybackService.kt (onCreate)
+
+// 1. MainActivity를 열 Intent 및 PendingIntent 생성
+val activityIntent = Intent(this, MainActivity::class.java)
+val pendingIntent = PendingIntent.getActivity(...)
+
+// 2. MediaSession 빌드 시 setSessionActivity로 PendingIntent 설정
+mediaSession = MediaSession.Builder(this, player)
+    .setSessionActivity(pendingIntent)
+    .build()
+
+
+// MainActivity.kt (Mp3AppNavigator)
+
+// 3. 재생 중인 곡이 있다면 시작 화면을 'nowPlaying'으로 설정
+val startDestination = if (mediaController?.currentMediaItem != null) {
+    "nowPlaying"
+} else {
+    "musicList"
+}
+NavHost(navController = navController, startDestination = startDestination) { ... }
+```
+
+**핵심:** `MediaSession`에 `PendingIntent`를 설정하면, 시스템 UI(알림 등)가 해당 세션과 상호작용할 때 이 `Intent`를 실행할 수 있게 됩니다. 이를 통해 사용자를 앱의 특정 화면으로 유도할 수 있습니다. 또한, 앱 실행 시점에 `NavHost`의 `startDestination`을 동적으로 결정하면, 앱의 현재 상태(예: 곡 재생 중)에 따라 가장 적절한 화면을 사용자에게 먼저 보여줄 수 있습니다.
