@@ -19,6 +19,12 @@ data class Lyric(
     val timestamp: Long = System.currentTimeMillis() // 마지막 업데이트 시간
 )
 
+// 즐겨찾기 데이터를 저장할 엔티티
+@Entity(tableName = "favorites")
+data class Favorite(
+    @PrimaryKey val musicId: Long // MediaStore ID를 기본 키로 사용
+)
+
 // 데이터베이스 접근 객체 (DAO)
 @Dao
 interface LyricDao {
@@ -29,10 +35,26 @@ interface LyricDao {
     suspend fun insertLyric(lyric: Lyric)
 }
 
+@Dao
+interface FavoriteDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun addFavorite(favorite: Favorite)
+
+    @Query("DELETE FROM favorites WHERE musicId = :musicId")
+    suspend fun removeFavorite(musicId: Long)
+
+    @Query("SELECT * FROM favorites")
+    suspend fun getAllFavorites(): List<Favorite>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE musicId = :musicId)")
+    suspend fun isFavorite(musicId: Long): Boolean
+}
+
 // Room 데이터베이스 정의
-@Database(entities = [Lyric::class], version = 1, exportSchema = false)
+@Database(entities = [Lyric::class, Favorite::class], version = 2, exportSchema = false)
 abstract class LyricsDatabase : RoomDatabase() {
     abstract fun lyricDao(): LyricDao
+    abstract fun favoriteDao(): FavoriteDao
 
     companion object {
         @Volatile
@@ -44,7 +66,8 @@ abstract class LyricsDatabase : RoomDatabase() {
                     context.applicationContext,
                     LyricsDatabase::class.java,
                     "lyrics_database"
-                ).build()
+                ).fallbackToDestructiveMigration() // 스키마 변경 시 기존 데이터베이스를 파괴하고 새로 만듦
+                    .build()
                 INSTANCE = instance
                 instance
             }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.app.Notification
+import android.os.CountDownTimer
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -16,12 +17,25 @@ import androidx.media3.session.MediaSessionService
 import androidx.media3.ui.PlayerNotificationManager
 import com.suldenlion.mp3app.MainActivity
 import com.suldenlion.mp3app.R
+import com.suldenlion.mp3app.viewmodel.PlaybackMode // PlaybackMode enum import
+import java.util.concurrent.TimeUnit
 
 @androidx.media3.common.util.UnstableApi
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var player: ExoPlayer
     private lateinit var notificationManager: PlayerNotificationManager
+    private var countDownTimer: CountDownTimer? = null
+
+
+    companion object {
+        const val ACTION_SET_TIMER = "com.suldenlion.mp3app.ACTION_SET_TIMER"
+        const val ACTION_CANCEL_TIMER = "com.suldenlion.mp3app.ACTION_CANCEL_TIMER"
+        const val EXTRA_TIMER_MINUTES = "com.suldenlion.mp3app.EXTRA_TIMER_MINUTES"
+
+        const val ACTION_SET_PLAYBACK_MODE = "com.suldenlion.mp3app.ACTION_SET_PLAYBACK_MODE"
+        const val EXTRA_PLAYBACK_MODE = "com.suldenlion.mp3app.EXTRA_PLAYBACK_MODE"
+    }
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -47,7 +61,10 @@ class PlaybackService : MediaSessionService() {
         )
 
         player = ExoPlayer.Builder(this).build()
+        // 기본 재생 모드 설정
         player.repeatMode = Player.REPEAT_MODE_ALL
+        player.shuffleModeEnabled = false
+
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(pendingIntent)
             .build()
@@ -56,6 +73,51 @@ class PlaybackService : MediaSessionService() {
 
         // 알림 설정
         setupNotification()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_SET_TIMER -> {
+                val minutes = intent.getLongExtra(EXTRA_TIMER_MINUTES, 0)
+                if (minutes > 0) {
+                    val millis = TimeUnit.MINUTES.toMillis(minutes)
+                    countDownTimer?.cancel()
+                    countDownTimer = object : CountDownTimer(millis, 1000) {
+                        override fun onTick(millisUntilFinished: Long) {
+                            // Can be used to show remaining time in notification
+                        }
+
+                        override fun onFinish() {
+                            player.pause()
+                        }
+                    }.start()
+                }
+            }
+            ACTION_CANCEL_TIMER -> {
+                countDownTimer?.cancel()
+            }
+            ACTION_SET_PLAYBACK_MODE -> {
+                val modeString = intent.getStringExtra(EXTRA_PLAYBACK_MODE)
+                modeString?.let {
+                    val playbackMode = PlaybackMode.valueOf(it)
+                    when (playbackMode) {
+                        PlaybackMode.REPEAT_ALL -> {
+                            player.repeatMode = Player.REPEAT_MODE_ALL
+                            player.shuffleModeEnabled = false
+                        }
+                        PlaybackMode.REPEAT_ONE -> {
+                            player.repeatMode = Player.REPEAT_MODE_ONE
+                            player.shuffleModeEnabled = false
+                        }
+                        PlaybackMode.SHUFFLE -> {
+                            player.repeatMode = Player.REPEAT_MODE_ALL // Shuffle implies repeat all usually
+                            player.shuffleModeEnabled = true
+                        }
+                    }
+                }
+            }
+        }
+        return super.onStartCommand(intent, flags, startId)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
@@ -69,6 +131,7 @@ class PlaybackService : MediaSessionService() {
             release()
             mediaSession = null
         }
+        countDownTimer?.cancel()
         notificationManager.setPlayer(null)
         super.onDestroy()
     }

@@ -30,6 +30,12 @@
 - **재생 목록 관리**: 대기열(Queue) 관리, 재생 목록 편집 기능 추가
 - **고급 기능**: 앨범 아트 표시, 잠금 화면 컨트롤, 가사 스크롤 동기화 등
 
+### 2025-12-21 리팩토링
+- **고속 스크롤 기능 개선 (한글 초성 지원)**:
+  - 기존 알파벳만 지원하던 `MusicListScreen`의 고속 스크롤 인덱스 기능을 리팩토링했습니다.
+  - 한글 곡 제목의 초성(ㄱ, ㄴ, ㄷ 등)을 추출하는 로직을 추가하여, 한글 제목도 초성 순으로 빠르게 탐색할 수 있도록 개선했습니다.
+  - 인덱스 순서를 '한글 → 알파벳 → 기타' 순으로 정렬하여 사용성을 향상시켰습니다.
+
 ### 2025-11-26 리팩토링 및 개선 사항
 - **성능 개선 (목록 로딩)**: `ViewModel`에 음악 목록을 캐시하여, 목록 화면에 재진입할 때마다 발생하던 불필요한 전체 미디어 스캔을 제거하고 초기 로딩 속도를 크게 향상시켰습니다.
 - **재생 제어 기능 구현**:
@@ -40,3 +46,21 @@
   - **긴 가사**: 가사 영역에 `verticalScroll`을 적용하여 내용이 길어도 전체를 볼 수 있도록 수정했습니다.
 - **곡 길이 표시 오류 수정**: `Player.Listener`의 `onMediaMetadataChanged` 콜백 시점에 곡의 길이를 가져오도록 로직을 변경하여, 재생 화면 진입 시 발생하던 시간 표시 오류를 해결했습니다.
 - **현재 재생 화면 복귀**: `MediaSession`에 `PendingIntent`를 설정하여, 시스템 상단 바의 미디어 알림을 탭하면 앱의 현재 재생 화면으로 바로 이동하도록 사용자 경험을 개선했습니다.
+
+### 2025-12-02 기능 추가 및 디버깅
+- **즐겨찾기, 검색, 취침 타이머 기능 구현**:
+  - **즐겨찾기**: `Room` DB에 `Favorite` 테이블을 추가하고, 상세 재생 화면(`NowPlayingScreen`)에서 하트 아이콘을 통해 곡을 즐겨찾기에 추가/삭제하는 기능을 구현했습니다. 메인 목록 화면에서 진입 가능한 별도의 즐겨찾기 목록 화면(`FavoritesScreen`)도 추가했습니다.
+  - **검색**: 메인 목록 화면 상단에 검색 바를 추가하여 곡 제목이나 아티스트 이름으로 음악을 필터링하는 기능을 구현했습니다.
+  - **취침 타이머**: 메인 목록 화면의 설정 메뉴를 통해 진입하며, 지정된 시간(15/30/60분) 후에 음악 재생을 자동으로 중지시키는 취침 타이머 기능을 구현했습니다.
+- **알파벳 인덱스 고속 스크롤**:
+  - `MusicListScreen`에 알파벳 인덱스가 있는 드래그 가능한 스크롤 바를 추가하여 긴 곡 목록을 빠르게 탐색할 수 있도록 했습니다. `LazyColumn`과 `LazyListState`, `rememberCoroutineScope`, `derivedStateOf`, `generateAlphabeticalIndex` 헬퍼 함수, `AlphabeticalScrollIndex` 컴포저블을 활용하여 구현했습니다.
+- **재생 모드 (셔플, 한 곡 반복, 전체 반복)**:
+  - `NowPlayingScreen`에 재생 모드를 전환할 수 있는 아이콘을 추가했습니다. `MusicViewModel`에서 `PlaybackMode` enum으로 상태를 관리하고, `PlaybackService`에서 `ExoPlayer`의 `repeatMode` 및 `shuffleModeEnabled` 속성을 변경하도록 구현했습니다.
+
+- **즐겨찾기 기능 버그 해결**:
+  - **문제 현상**: `NowPlayingScreen`에서 즐겨찾기(하트) 아이콘을 클릭해도 UI가 즉시 업데이트되지 않았습니다.
+  - **원인 및 해결**:
+    1. **레이스 컨디션**: 초기 `ViewModel` 내 상태 관리 로직의 레이스 컨디션이 문제였습니다. `musicList` `StateFlow`를 단일 진실 공급원으로 사용하여 해결했습니다.
+    2. **Compose UI 업데이트 문제**: `MusicItem` 데이터 클래스의 `Uri` 타입이 Jetpack Compose의 불안정성(unstable class)을 유발하여 UI 업데이트가 제대로 되지 않았습니다. `contentUri`의 타입을 `String`으로 변경하고 `LaunchedEffect`를 통해 명시적인 상태 관리를 도입하여 해결했습니다.
+    3. **ViewModel 스코핑 문제**: `MusicListScreen`이 `Mp3AppNavigator`에서 제공하는 `MusicViewModel` 인스턴스 대신 자체 인스턴스를 생성하여, `NowPlayingScreen`에서 즐겨찾기 상태 토글 시 `_musicList`가 비어 있던 문제였습니다. `MusicViewModel` 인스턴스를 컴포저블 트리를 통해 올바르게 전달하도록 수정하여 해결했습니다.
+    4. **컴파일러 캐싱 및 구문 오류**: 위 수정 과정에서 발생했던 컴파일러 캐싱 문제로 인한 오류(예: `No value passed for parameter 'musicViewModel'`)와 `DisposableEffect` 블록 손상으로 인한 구문 오류(`Function declaration must have a name`), `derivedStateOf`를 사용한 `alphabeticalIndex`와 `scrollMap`의 잘못된 선언 (`.value` 누락 및 `by` 키워드 부재) 등의 오류를 수정했습니다. 모든 컴파일 오류가 해결되었습니다.

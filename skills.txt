@@ -145,3 +145,47 @@ NavHost(navController = navController, startDestination = startDestination) { ..
 ```
 
 **핵심:** `MediaSession`에 `PendingIntent`를 설정하면, 시스템 UI(알림 등)가 해당 세션과 상호작용할 때 이 `Intent`를 실행할 수 있게 됩니다. 이를 통해 사용자를 앱의 특정 화면으로 유도할 수 있습니다. 또한, 앱 실행 시점에 `NavHost`의 `startDestination`을 동적으로 결정하면, 앱의 현재 상태(예: 곡 재생 중)에 따라 가장 적절한 화면을 사용자에게 먼저 보여줄 수 있습니다.
+
+## 6. 기능 구현 및 디버깅: 즐겨찾기, 검색, 타이머, 고속 스크롤, 재생 모드
+
+### 6.1 즐겨찾기 기능 (디버깅 과정 포함)
+- **개요**: 곡 상세 화면에서 즐겨찾기 상태를 토글하고, 별도의 즐겨찾기 목록 화면에서 관리하는 기능을 구현했습니다.
+- **주요 기술**:
+  - **`Room` 데이터베이스 확장**: `Favorite` 엔티티와 `FavoriteDao`를 추가하여 즐겨찾기 상태를 영속적으로 저장했습니다. `fallbackToDestructiveMigration()`을 사용하여 스키마 변경을 처리했습니다.
+  - **`MusicViewModel` 리팩토링 및 상태 관리**: `musicList` `StateFlow`를 즐겨찾기 상태의 '단일 진실 공급원(Single Source of Truth)'으로 활용하여 UI와 데이터 간의 일관성을 유지했습니다.
+  - **Compose UI 업데이트 디버깅**: 초기 UI 업데이트가 되지 않는 문제 해결 과정에서 다음과 같은 교훈을 얻었습니다.
+    - **`MusicItem` 안정성**: `android.net.Uri`와 같이 Compose가 불안정하다고 판단하는 객체를 `data class`에 포함할 경우, `@Immutable` 어노테이션을 사용하거나 (`contentUri`를 `String`으로 변경한 것처럼) 안정적인 타입으로 변환하여 Compose가 변경 사항을 정확히 감지하도록 해야 합니다.
+    - **ViewModel 스코핑**: `ViewModel` 인스턴스가 컴포저블 트리 내에서 올바르게 공유되도록 파라미터 전달 방식을 일관되게 유지하는 것이 중요합니다. 잘못된 스코핑은 `ViewModel`의 상태가 예상과 다르게 동작하게 만드는 원인이 됩니다.
+    - **`remember` + `derivedStateOf` 사용법**: `val (a, b) by remember { derivedStateOf { Pair(x, y) } }`와 같이 `by` 키워드를 사용하여 `derivedStateOf`의 결과를 올바르게 위임하고 상태를 관찰해야 합니다.
+
+### 6.2 검색 기능
+- **개요**: 음악 목록 화면 상단에 검색 바를 추가하여 곡 제목이나 아티스트 이름으로 음악을 필터링하는 기능을 구현했습니다.
+- **주요 기술**:
+  - **`OutlinedTextField` 및 상태 관리**: `MutableState<String>`으로 검색 쿼리를 관리하고, 실시간으로 `filteredMusicList`를 업데이트하여 UI에 반영했습니다.
+  - **`contains(ignoreCase = true)`**: 대소문자를 구분하지 않는 효율적인 문자열 검색을 활용했습니다.
+
+### 6.3 취침 타이머 기능
+- **개요**: 지정된 시간 후에 음악 재생을 자동으로 중지시키는 취침 타이머 기능을 구현했습니다.
+- **주요 기술**:
+  - **`PlaybackService`와의 `Intent` 통신**: `MusicViewModel`에서 `ACTION_SET_TIMER`, `ACTION_CANCEL_TIMER` `Intent`를 `PlaybackService`로 전송하여 타이머 시작/취소 명령을 전달했습니다.
+  - **`android.os.CountDownTimer`**: `PlaybackService` 내에서 `CountDownTimer`를 사용하여 지정된 시간 후에 `ExoPlayer`의 재생을 일시 중지시켰습니다.
+  - **`StateFlow`를 통한 타이머 상태 UI 반영**: `MusicViewModel`의 `_timerText` `StateFlow`를 통해 남은 시간을 UI에 실시간으로 표시했습니다.
+
+### 6.4 알파벳 인덱스 고속 스크롤
+- **개요**: `MusicListScreen`에 알파벳 인덱스가 있는 드래그 가능한 스크롤 바를 추가하여 긴 곡 목록을 빠르게 탐색할 수 있도록 했습니다.
+- **주요 기술**:
+  - **`LazyColumn` 및 `LazyListState`**: `rememberLazyListState()`를 사용하여 `LazyColumn`의 스크롤 상태를 제어하고, `scrollToItem()` 메서드를 사용하여 특정 항목으로 스크롤했습니다.
+  - **`derivedStateOf`를 이용한 인덱스 맵 생성**: `filteredMusicList`를 기반으로 고유한 첫 글자 목록(`alphabeticalIndex`)과 각 글자에 해당하는 `LazyColumn`의 인덱스 맵(`scrollMap`)을 효율적으로 생성했습니다. `remember`와 `derivedStateOf`를 사용하여 목록이 변경될 때만 맵을 재계산하도록 최적화했습니다.
+  - **`Modifier.pointerInput` 및 `detectVerticalDragGestures`**: `AlphabeticalScrollIndex` 컴포저블에서 `pointerInput` 모디파이어와 `detectVerticalDragGestures`를 사용하여 사용자의 세로 드래그 제스처를 감지하고, 해당 제스처에 따라 `LazyColumn`을 스크롤하도록 구현했습니다.
+
+### 6.5 재생 모드 (반복, 한 곡 반복, 셔플)
+- **개요**: `NowPlayingScreen`에 재생 모드(전체 반복, 한 곡 반복, 셔플)를 전환할 수 있는 아이콘을 추가했습니다.
+- **주요 기술**:
+  - **`PlaybackMode` `enum class`**: 세 가지 재생 모드를 명확하게 정의하는 `enum class`를 활용했습니다.
+  - **`MusicViewModel` 상태 관리**: `_playbackMode` `MutableStateFlow`를 사용하여 현재 재생 모드 상태를 관리하고, `togglePlaybackMode()` 함수를 통해 모드를 순환시켰습니다.
+  - **`PlaybackService` 및 `ExoPlayer` 설정**: `PlaybackService`에서 `MusicViewModel`로부터 전달된 `ACTION_SET_PLAYBACK_MODE` `Intent`를 받아 `ExoPlayer`의 `repeatMode` (`Player.REPEAT_MODE_ALL`, `Player.REPEAT_MODE_ONE`) 및 `shuffleModeEnabled` 속성을 동적으로 변경하도록 구현했습니다.
+
+### 6.6 컴파일러 오류 및 디버깅
+- **`@OptIn` 어노테이션 관리**: `ExperimentalMaterial3Api`, `ExperimentalComposeApi`, `UnstableApi` 등 실험용 API 사용 시 필요한 `@OptIn` 어노테이션을 코드의 적절한 위치에 적용했습니다.
+- **ViewModel 스코핑**: `AndroidViewModel`과 `Jetpack Navigation Compose` 사용 시 `ViewModel` 인스턴스가 `NavHost`의 생명주기에 따라 스코핑되고, 이를 하위 컴포저블에 올바르게 전달하여 상태 일관성을 유지하는 방법을 적용했습니다.
+- **컴파일러 캐싱 문제 해결**: 때때로 발생하는 컴파일러의 오래된 캐시 문제로 인한 오인식 오류(`No value passed for parameter`)는 함수 시그니처의 매개변수 순서를 변경하는 등의 재평가 유도로 해결될 수 있음을 확인했습니다.
